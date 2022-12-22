@@ -38,9 +38,15 @@ elseif(${BACKEND_TYPE} STREQUAL "X11")
     "src/flutter/shell/platform/linux_embedded/window/native_window_x11.cc")
 else()
   include(cmake/generate_wayland_protocols.cmake)
+
   pkg_get_variable(WAYLAND_PROTOCOLS_DATADIR wayland-protocols pkgdatadir)
   set(_wayland_protocols_xml_dir "${WAYLAND_PROTOCOLS_DATADIR}")
   set(_wayland_protocols_src_dir "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/wayland/protocols")
+
+  pkg_get_variable(WLR_PROTOCOLS_DATADIR wlr-protocols pkgdatadir)
+  set(_wlr_protocols_xml_dir "${WLR_PROTOCOLS_DATADIR}")
+  set(_wlr_protocols_src_dir "${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/wayland/protocols")
+
   file(MAKE_DIRECTORY "${_wayland_protocols_src_dir}")
 
   generate_wayland_client_protocol(
@@ -63,6 +69,11 @@ else()
     CODE_FILE "${_wayland_protocols_src_dir}/presentation-time-protocol.c"
     HEADER_FILE "${_wayland_protocols_src_dir}/presentation-time-protocol.h")
 
+  generate_wayland_client_protocol(
+    PROTOCOL_FILE "${_wlr_protocols_xml_dir}/unstable/wlr-layer-shell-unstable-v1.xml"
+    CODE_FILE "${_wlr_protocols_src_dir}/wlr-layer-shell-unstable-v1-protocol.c"
+    HEADER_FILE "${_wlr_protocols_src_dir}/wlr-layer-shell-unstable-v1-protocol.h")
+
   add_definitions(-DFLUTTER_TARGET_BACKEND_WAYLAND)
   add_definitions(-DDISPLAY_BACKEND_TYPE_WAYLAND)
   set(DISPLAY_BACKEND_SRC
@@ -70,6 +81,7 @@ else()
     "${_wayland_protocols_src_dir}/text-input-unstable-v1-protocol.c"
     "${_wayland_protocols_src_dir}/text-input-unstable-v3-protocol.c"
     "${_wayland_protocols_src_dir}/presentation-time-protocol.c"
+    "${_wlr_protocols_src_dir}/wlr-layer-shell-unstable-v1-protocol.c"
     "src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc"
     "src/flutter/shell/platform/linux_embedded/window/native_window_wayland.cc"
     "src/flutter/shell/platform/linux_embedded/window/native_window_wayland_decoration.cc"

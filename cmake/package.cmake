@@ -24,6 +24,7 @@ elseif(${BACKEND_TYPE} STREQUAL "X11")
   pkg_check_modules(X11 REQUIRED x11)
 else()
   # Wayland backend
+  pkg_check_modules(WLR_PROTOCOLS REQUIRED wlr-protocols)
   pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols)
   pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client>=1.16.0)
   pkg_check_modules(WAYLAND_CURSOR REQUIRED wayland-cursor>=1.16.0)

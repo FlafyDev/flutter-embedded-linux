@@ -17,6 +17,7 @@
 
 #include "flutter/shell/platform/linux_embedded/logger.h"
 #include "flutter/shell/platform/linux_embedded/surface/context_egl.h"
+#include "wayland/protocols/wlr-layer-shell-unstable-v1-protocol.h"
 
 namespace flutter {
 
@@ -63,6 +64,25 @@ const xdg_wm_base_listener ELinuxWindowWayland::kXdgWmBaseListener = {
     .ping = [](void* data,
                xdg_wm_base* xdg_wm_base,
                uint32_t serial) { xdg_wm_base_pong(xdg_wm_base, serial); },
+};
+
+const zwlr_layer_surface_v1_listener ELinuxWindowWayland::kZwlrLayerSurfaceV1Listener = {
+    .configure =
+        [](void* data, zwlr_layer_surface_v1* zwlr_layer_surface_v1, uint32_t serial, uint32_t width,
+           uint32_t height) {
+          auto self = reinterpret_cast<ELinuxWindowWayland*>(data);
+          constexpr int32_t x = 0;
+          int32_t y = 0;
+          self->view_properties_.width = width;
+          self->view_properties_.height = height;
+          zwlr_layer_surface_v1_ack_configure(zwlr_layer_surface_v1, serial);
+          zwlr_layer_surface_v1_set_size(zwlr_layer_surface_v1, width, height);
+        },
+    .closed =
+        [](void* data, zwlr_layer_surface_v1* xdg_toplevel) {
+          auto self = reinterpret_cast<ELinuxWindowWayland*>(data);
+          self->running_ = false;
+        },
 };
 
 const xdg_surface_listener ELinuxWindowWayland::kXdgSurfaceListener = {
@@ -812,6 +832,7 @@ ELinuxWindowWayland::ELinuxWindowWayland(
       running_(false),
       maximised_(false),
       is_requested_show_virtual_keyboard_(false),
+      zwlr_layer_surface_v1_(nullptr),
       xdg_toplevel_(nullptr),
       wl_compositor_(nullptr),
       wl_subcompositor_(nullptr),
@@ -987,6 +1008,10 @@ ELinuxWindowWayland::~ELinuxWindowWayland() {
     xdg_toplevel_destroy(xdg_toplevel_);
     xdg_toplevel_ = nullptr;
   }
+  if (zwlr_layer_shell_v1_) {
+    zwlr_layer_shell_v1_destroy(zwlr_layer_shell_v1_);
+    zwlr_layer_shell_v1_ = nullptr;
+  }
 
   if (xdg_wm_base_) {
     xdg_wm_base_destroy(xdg_wm_base_);
@@ -1103,10 +1128,17 @@ bool ELinuxWindowWayland::CreateRenderSurface(int32_t width, int32_t height) {
     return false;
   }
 
+  if (!zwlr_layer_shell_v1_) {
+    ELINUX_LOG(ERROR) << "Wlr-layer-shell is invalid";
+    return false;
+  }
+
   if (view_properties_.view_mode == FlutterDesktopViewMode::kFullscreen) {
     width = view_properties_.width;
     height = view_properties_.height;
   }
+
+  is_layer_surface_ = false;
 
   ELINUX_LOG(TRACE) << "Created the Wayland surface: " << width << "x"
                     << height;
@@ -1125,17 +1157,33 @@ bool ELinuxWindowWayland::CreateRenderSurface(int32_t width, int32_t height) {
   native_window_ =
       std::make_unique<NativeWindowWayland>(wl_compositor_, width, height);
 
-  xdg_surface_ =
-      xdg_wm_base_get_xdg_surface(xdg_wm_base_, native_window_->Surface());
-  if (!xdg_surface_) {
-    ELINUX_LOG(ERROR) << "Failed to get the xdg surface.";
-    return false;
-  }
-  xdg_surface_add_listener(xdg_surface_, &kXdgSurfaceListener, this);
+  if (is_layer_surface_) {
+    zwlr_layer_surface_v1_ = zwlr_layer_shell_v1_get_layer_surface(
+        zwlr_layer_shell_v1_, native_window_->Surface(), wl_output_,
+        ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "flutter-layer-shell");
+    if (!zwlr_layer_surface_v1_) {
+      ELINUX_LOG(ERROR) << "Failed to create the layer surface.";
+      return false;
+    }
 
-  xdg_toplevel_ = xdg_surface_get_toplevel(xdg_surface_);
-  xdg_toplevel_set_title(xdg_toplevel_, "Flutter");
-  xdg_toplevel_add_listener(xdg_toplevel_, &kXdgToplevelListener, this);
+    zwlr_layer_surface_v1_set_size(zwlr_layer_surface_v1_, width, height);
+
+    zwlr_layer_surface_v1_add_listener(zwlr_layer_surface_v1_,
+                                       &kZwlrLayerSurfaceV1Listener, this);
+  } else {
+    xdg_surface_ =
+        xdg_wm_base_get_xdg_surface(xdg_wm_base_, native_window_->Surface());
+    if (!xdg_surface_) {
+      ELINUX_LOG(ERROR) << "Failed to get the xdg surface.";
+      return false;
+    }
+    xdg_surface_add_listener(xdg_surface_, &kXdgSurfaceListener, this);
+
+    xdg_toplevel_ = xdg_surface_get_toplevel(xdg_surface_);
+    xdg_toplevel_set_title(xdg_toplevel_, "Flutter");
+    xdg_toplevel_add_listener(xdg_toplevel_, &kXdgToplevelListener, this);
+  }
+
   wl_surface_commit(native_window_->Surface());
 
   {
@@ -1154,7 +1202,7 @@ bool ELinuxWindowWayland::CreateRenderSurface(int32_t width, int32_t height) {
       std::make_unique<EnvironmentEgl>(wl_display_)));
   render_surface_->SetNativeWindow(native_window_.get());
 
-  if (view_properties_.use_window_decoration) {
+  if (!is_layer_surface_ && view_properties_.use_window_decoration) {
     window_decorations_ = std::make_unique<WindowDecorationsWayland>(
         wl_display_, wl_compositor_, wl_subcompositor_,
         native_window_->Surface(), width, height);
@@ -1171,6 +1219,10 @@ void ELinuxWindowWayland::DestroyRenderSurface() {
   render_surface_ = nullptr;
   native_window_ = nullptr;
 
+  if (zwlr_layer_surface_v1_) {
+    zwlr_layer_surface_v1_destroy(zwlr_layer_surface_v1_);
+    zwlr_layer_surface_v1_ = nullptr;
+  }
   if (xdg_surface_) {
     xdg_surface_destroy(xdg_surface_);
     xdg_surface_ = nullptr;
@@ -1301,6 +1353,14 @@ void ELinuxWindowWayland::WlRegistryHandler(wl_registry* wl_registry,
     constexpr uint32_t kMaxVersion = 1;
     wl_subcompositor_ = static_cast<wl_subcompositor*>(wl_registry_bind(
         wl_registry, name, &wl_subcompositor_interface, kMaxVersion));
+  }
+
+  if (strcmp (interface, zwlr_layer_shell_v1_interface.name) == 0) {
+    constexpr uint32_t kMaxVersion = 3;
+    zwlr_layer_shell_v1_ = static_cast<decltype(zwlr_layer_shell_v1_)>(
+        wl_registry_bind(wl_registry, name, &zwlr_layer_shell_v1_interface,
+                         std::min(kMaxVersion, version)));
+    return;
   }
 
   if (!strcmp(interface, xdg_wm_base_interface.name)) {
