@@ -1138,7 +1138,7 @@ bool ELinuxWindowWayland::CreateRenderSurface(int32_t width, int32_t height) {
     height = view_properties_.height;
   }
 
-  is_layer_surface_ = false;
+  is_layer_surface_ = view_properties_.is_layer_shell;
 
   ELINUX_LOG(TRACE) << "Created the Wayland surface: " << width << "x"
                     << height;
